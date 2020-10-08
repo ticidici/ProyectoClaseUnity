@@ -9,7 +9,14 @@ public class Character : MonoBehaviour
     CharacterInputActions inputActions;
     AnimationCurve curve;
 
-    public float runAcceleration = 6;
+    public float runAcceleration = 16;
+    public float runMaxSpeed = 8;
+    public float maxDownwardsSpeedFalling = 15;
+    public float maxUpwardsSpeedNormal = 40;
+    public float normalGravity = 20;
+    public float turnSpeed = 500;
+    public float runDeceleration = 3;
+    public Vector2 jumpSpeed = new Vector2(0, 3.5f);
 
 
     //PHYSICS PROPERTIES
@@ -17,9 +24,17 @@ public class Character : MonoBehaviour
     Vector3 Acceleration { get; set; }
     float _maxHorizontalSpeed;
     float MaxHorizontalSpeed { get { return _maxHorizontalSpeed; } set { _maxHorizontalSpeed = Mathf.Abs(value); } }
+    float _maxDownwardsSpeed;
+    float MaxDownwardsSpeed { get { return _maxDownwardsSpeed; } set { _maxDownwardsSpeed = -Mathf.Abs(value); } }
+    float _maxUpwardsSpeed;
+    float MaxUpwardsSpeed { get { return _maxUpwardsSpeed; } set { _maxUpwardsSpeed = Mathf.Abs(value); } }
+    float Gravity { get; set; } = -15;//permitimos gravedad positiva, ir con cuidado
+    bool Decelerate { get; set; }
+    bool IsGrounded { get; set; }
 
     //INPUT
     Vector2 lastMovementInput = new Vector2();
+    ButtonPhase jumpPress = ButtonPhase.NotPressed;
 
     void Awake()
     {
@@ -30,23 +45,64 @@ public class Character : MonoBehaviour
 
     void Update()
     {
-        //Vector2 input = new Vector2(Input.GetAxis("Horizontal"), Input.GetAxis("Vertical"));
-        //Vector3 movement = new Vector3(lastMovementInput.x, 0, lastMovementInput.y);
-        Vector3 movement = Utils.InputRelativeToCamera(Camera.main.transform, lastMovementInput);
-        movement.Normalize();
+        MaxHorizontalSpeed = runMaxSpeed;
+        MaxDownwardsSpeed = maxDownwardsSpeedFalling;
+        MaxUpwardsSpeed = maxUpwardsSpeedNormal;
+        Gravity = normalGravity;
 
-        if(movement != Vector3.zero)
+        ProcessMovementInput(lastMovementInput);
+        ProcessJumpInput();
+
+        ApplyMovementSimple();
+
+        if (jumpPress == ButtonPhase.JustPressed || jumpPress == ButtonPhase.JustReleased)
+            jumpPress++;
+    }
+
+    void ProcessMovementInput(Vector2 input)
+    {
+        Vector3 inputWorldDirection = Utils.InputRelativeToCamera(Camera.main.transform, input);
+
+
+        if (input != Vector2.zero)
         {
-            Acceleration = movement * runAcceleration;
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, Quaternion.LookRotation(inputWorldDirection, Vector3.up), turnSpeed * Time.deltaTime);
+            if (IsGrounded)
+            {
+                //si estamos en el suelo reconvertimos la inercia hacia la nueva dirección
+                //TODO falta quitar velocidad si el cambio de yaw es muy brusco
+                Vector2 horizontalVelocity = new Vector2(Velocity.x, Velocity.z);
+                Velocity = new Vector3(inputWorldDirection.x * horizontalVelocity.magnitude, Velocity.y, inputWorldDirection.z * horizontalVelocity.magnitude);
+            }
+            Acceleration = inputWorldDirection * runAcceleration;
+            Decelerate = false;
         }
         else
         {
-            Acceleration = Vector3.zero;
-            Velocity = Vector3.zero;
+            Vector2 horizontalVelocityOppositeDirection = new Vector2(-Velocity.x, -Velocity.z);
+            if (horizontalVelocityOppositeDirection != Vector2.zero)
+            {
+                horizontalVelocityOppositeDirection.Normalize();//no queremos normalizar el vector (0, 0)
+                Acceleration = new Vector3(horizontalVelocityOppositeDirection.x, 0, horizontalVelocityOppositeDirection.y);
+                Acceleration *= Mathf.Abs(runDeceleration);
+                Decelerate = true;
+            }
+            else
+                Acceleration = Vector3.zero;
         }
-        ApplyMovementSimple();
-    }
 
+    }
+    void ProcessJumpInput()
+    {
+        if (IsGrounded)
+        {
+            if (jumpPress == ButtonPhase.JustPressed)
+            {
+                //TODO Si la velocidad que llevamos es menor a la velocidad horizontal de salto, ponérsela en x/z
+                Velocity = new Vector3(Velocity.x, jumpSpeed.y, Velocity.z);
+            }
+        }
+    }
     private void OnEnable()
     {
         inputActions.PlayerActionMap.Enable();
@@ -62,14 +118,19 @@ public class Character : MonoBehaviour
         inputActions.PlayerActionMap.Movement.performed += OnMovementChanged;
         inputActions.PlayerActionMap.Movement.canceled += OnMovementChanged;
 
-        //inputActions.PlayerActionMap.Jump.performed += OnJumpInputChanged;
-        //inputActions.PlayerActionMap.Jump.canceled += OnJumpInputChanged;
+        inputActions.PlayerActionMap.Jump.performed += OnJumpInputChanged;
+        inputActions.PlayerActionMap.Jump.canceled += OnJumpInputChanged;
 
     }
 
     void OnMovementChanged(InputAction.CallbackContext context)
     {
         lastMovementInput = context.ReadValue<Vector2>();
+    }
+
+    void OnJumpInputChanged(InputAction.CallbackContext context)
+    {
+        jumpPress = context.phase == InputActionPhase.Canceled ? ButtonPhase.JustReleased : ButtonPhase.JustPressed;
     }
 
     void ApplyMovementSimple()
@@ -80,18 +141,38 @@ public class Character : MonoBehaviour
         Vector3 newVelocity = Velocity + (Acceleration * Time.deltaTime);//la que llevamos más la ganada en el frame
 
 
-        //Vector2 horizontalVelocity = new Vector2(newVelocity.x, newVelocity.z);
-        //if (horizontalVelocity.magnitude > MaxHorizontalSpeed)
-        //{
-        //    horizontalVelocity.Normalize();
-        //    horizontalVelocity *= MaxHorizontalSpeed;
-        //    newVelocity.x = horizontalVelocity.x;
-        //    newVelocity.z = horizontalVelocity.y;
-        //}
+        Vector2 horizontalVelocity = new Vector2(newVelocity.x, newVelocity.z);
+        if (horizontalVelocity.magnitude > MaxHorizontalSpeed)
+        {
+            horizontalVelocity.Normalize();
+            horizontalVelocity *= MaxHorizontalSpeed;
+            newVelocity.x = horizontalVelocity.x;
+            newVelocity.z = horizontalVelocity.y;
+        }
 
 
-        controller.SimpleMove(newVelocity);
+        //paramos del todo si cambiamos de signo por la desaceleración
+        if (Decelerate &&
+            (newVelocity.x * Velocity.x < 0 || newVelocity.z * Velocity.z < 0))//negativo por negativo = positivo, solo negativo por positivo da negativo
+        {
+            newVelocity.x = 0;
+            newVelocity.z = 0;
+            Acceleration = new Vector3(0, Acceleration.y, 0);
+            Decelerate = false;
+        }
+
+        Vector3 oldPosition = transform.position;
+
+        IsGrounded = controller.SimpleMove(newVelocity);
+
+        //Velocity = (transform.position - oldPosition) / Time.deltaTime;
 
         Velocity = newVelocity;
+
+        if (Velocity.x == 0 && Velocity.z == 0)
+        {
+            //mirar si hay que poner desaceleración a 0 también
+            Decelerate = false;
+        }
     }
 }

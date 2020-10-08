@@ -5,6 +5,16 @@ using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 
+public enum ButtonPhase
+{
+    JustPressed = 0,
+    Pressed = 1,
+    //Apretado es <= Pressed
+    //No apretado es >= JustReleased
+    JustReleased = 2,
+    NotPressed = 3,
+}
+
 public class Utils : MonoBehaviour
 {
 
